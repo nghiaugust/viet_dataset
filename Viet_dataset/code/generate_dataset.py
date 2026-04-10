@@ -4,6 +4,23 @@ from tqdm import tqdm
 from trdg.generators import GeneratorFromDict
 
 # ==========================================
+# MONKEY PATCH: SỬA LỖI PILLOW 10+ CHO TRDG
+# ==========================================
+import PIL.ImageFont
+if not hasattr(PIL.ImageFont.FreeTypeFont, 'getsize'):
+    def getsize_patch(self, text, *args, **kwargs):
+        left, top, right, bottom = self.getbbox(text, *args, **kwargs)
+        return (right - left, bottom - top)
+    PIL.ImageFont.FreeTypeFont.getsize = getsize_patch
+
+if not hasattr(PIL.ImageFont.FreeTypeFont, 'getoffset'):
+    def getoffset_patch(self, text, *args, **kwargs):
+        left, top, right, bottom = self.getbbox(text, *args, **kwargs)
+        return (left, top)
+    PIL.ImageFont.FreeTypeFont.getoffset = getoffset_patch
+# ==========================================
+
+# ==========================================
 # 1. CẤU HÌNH ĐƯỜNG DẪN VÀ THAM SỐ
 # ==========================================
 # Giả sử bạn chạy lệnh python từ thư mục gốc (chứa các thư mục background, text, fonts...)
@@ -74,23 +91,24 @@ generator = GeneratorFromDict(
     path=TEXT_FILE,
     fonts=final_font_paths,
     language='vn',
-    size=32,                   # Kích thước font chữ cơ bản
-    skewing_angle=3,           # Góc nghiêng tối đa (độ) - để nhỏ thôi cho giống chụp cam
-    random_skew=True,          # Bật nghiêng ngẫu nhiên
-    blur=1,                    # Độ mờ
-    random_blur=True,          # Bật làm mờ ngẫu nhiên (chống out-focus)
-    background_type=1,         # 1 = Sử dụng ảnh từ thư mục (image_dir)
-    image_dir=BGS_DIR,         # Đường dẫn tới thư mục chứa nền nhiễu, giấy tờ
-    distorsion_type=3,         # 3 = Bóp méo ngẫu nhiên (giả lập giấy nhăn/cong)
-    text_color='#000000,#2b2b2b,#1a1a1a', # Đa dạng hóa màu mực (đen sậm, xám đậm)
-    fit=True                   # Cắt background vừa khít với chữ
+    size=64,                   
+    margins=(10, 10, 10, 10),  
+    skewing_angle=2,           
+    random_skew=True,
+    blur=1,
+    random_blur=True,
+    background_type=1,
+    image_dir=BGS_DIR,
+    distorsion_type=1,        
+    text_color='#000000,#2b2b2b,#1a1a1a',
+    fit=True                   
 )
 
 # ==========================================
 # 4. VÒNG LẶP SINH ẢNH VÀ GHI NHÃN
 # ==========================================
 print(f"Bắt đầu gen {TOTAL_IMAGES} ảnh...")
-
+    
 # Mở file nhãn ở chế độ 'a' (append - ghi nối tiếp)
 with open(LABEL_FILE, 'a', encoding='utf-8') as f_label:
     
