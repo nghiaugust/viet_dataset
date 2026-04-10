@@ -10,7 +10,12 @@ import PIL.ImageFont
 if not hasattr(PIL.ImageFont.FreeTypeFont, 'getsize'):
     def getsize_patch(self, text, *args, **kwargs):
         left, top, right, bottom = self.getbbox(text, *args, **kwargs)
-        return (right - left, bottom - top)
+        width = right - left
+        height = bottom - top
+        # TRDG can underestimate Vietnamese glyph height with Pillow 10+.
+        # Add a vertical safety pad so descenders/diacritics are not clipped.
+        safety_pad = max(4, int(self.size * 0.35))
+        return (width, height + safety_pad)
     PIL.ImageFont.FreeTypeFont.getsize = getsize_patch
 
 if not hasattr(PIL.ImageFont.FreeTypeFont, 'getoffset'):
@@ -91,17 +96,19 @@ generator = GeneratorFromDict(
     path=TEXT_FILE,
     fonts=final_font_paths,
     language='vn',
-    size=64,                   
-    margins=(10, 10, 10, 10),  
-    skewing_angle=2,           
-    random_skew=True,
-    blur=1,
-    random_blur=True,
-    background_type=1,
-    image_dir=BGS_DIR,
-    distorsion_type=1,        
-    text_color='#000000,#2b2b2b,#1a1a1a',
-    fit=True                   
+    size=48,                        # Tăng chiều cao ảnh để giữ rõ dấu tiếng Việt
+    skewing_angle=1,                # Nghiêng nhẹ để giảm méo gây mất nét/ký tự
+    random_skew=True,               # Bật nghiêng ngẫu nhiên
+    blur=1,                         # Độ mờ tối đa
+    random_blur=True,               # Bật làm mờ ngẫu nhiên (chống out-focus)
+    background_type=3,              # 3 = Sử dụng ảnh từ thư mục (image_dir)
+    image_dir=BGS_DIR,              # Đường dẫn tới thư mục chứa nền nhiễu, giấy tờ
+    distorsion_type=1,              # Sine nhẹ để mô phỏng cong giấy tự nhiên
+    distorsion_orientation=1,       # Chỉ distort ngang (left-right), tránh kéo giãn theo trục dọc
+    margins=(4, 8, 10, 8),          # Ưu tiên margin dưới lớn hơn để bảo toàn dấu nặng/đuôi chữ
+    fit=False,                      # Không crop sát bbox, tránh cắt mất nét ở đáy ký tự
+    text_color='#000000,#2b2b2b,#1a1a1a',  # Đa dạng hóa màu mực (đen sậm, xám đậm)
+    word_split=False,               # FIX: Không tách từ → giữ nguyên cả dòng, tránh cắt nửa từ
 )
 
 # ==========================================
