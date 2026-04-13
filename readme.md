@@ -8,3 +8,6 @@ pip install "setuptools<70.0.0"
 pip install "Pillow<10.0.0"
 
 python code/generate_dataset.py
+
+
+bản v2 bổ sung về đệm giữa các biên
