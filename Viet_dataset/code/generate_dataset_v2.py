@@ -13,6 +13,7 @@ from trdg.data_generator import FakeTextDataGenerator
 # ==========================================
 # MONKEY PATCH: SỬA LỖI PILLOW 10+ CHO TRDG
 # ==========================================
+import PIL.Image
 import PIL.ImageFont
 if not hasattr(PIL.ImageFont.FreeTypeFont, 'getsize'):
     def getsize_patch(self, text, *args, **kwargs):
@@ -30,6 +31,11 @@ if not hasattr(PIL.ImageFont.FreeTypeFont, 'getoffset'):
         left, top, right, bottom = self.getbbox(text, *args, **kwargs)
         return (left, top)
     PIL.ImageFont.FreeTypeFont.getoffset = getoffset_patch
+
+try:
+    RESAMPLE_BICUBIC = PIL.Image.Resampling.BICUBIC
+except AttributeError:
+    RESAMPLE_BICUBIC = PIL.Image.BICUBIC
 # ==========================================
 
 # ==========================================
@@ -55,6 +61,14 @@ CLEAN_OUTPUT_FIRST = True      # Xóa batch_* cũ trước khi tạo mới
 RESUME_IF_POSSIBLE = True      # Tiếp tục chạy từ labels.txt nếu có
 VALIDATE_FONTS = True          # Test nhanh font để giảm nguy cơ crash lúc sinh
 STRICT_BACKGROUND_CHECK = True # Chặn file không phải ảnh trong thư mục background
+
+# Base margins used by TRDG (left, top, right, bottom).
+BASE_MARGINS = (6, 10, 12, 10)
+
+# Extra random padding after TRDG render.
+# This padding only expands borders and never shrinks current margins.
+ENABLE_RANDOM_EXTRA_PADDING = True
+PADDING_SEED_OFFSET = 97
 
 # Font weighting (Times ~30%, font khác ~70%)
 TARGET_FONTS = ['times.ttf', 'timesbd.ttf', 'timesbi.ttf', 'timesi.ttf']
@@ -281,6 +295,74 @@ def label_line_to_image_path(out_dir: Path, label_line: str) -> Path:
     return out_dir / rel_path
 
 
+def sample_random_extra_padding(base_width: int, base_height: int, rng: random.Random) -> Tuple[int, int, int, int]:
+    """
+    Randomize independent 4-side extra padding with hard constraints:
+    - left + right <= base_width
+    - top + bottom <= base_height // 2
+    - vertical total < horizontal total (when horizontal > 0)
+    """
+    if base_width <= 0 or base_height <= 0:
+        return 0, 0, 0, 0
+
+    max_horizontal_total = max(0, base_width)
+    left_pad = rng.randint(0, max_horizontal_total) if max_horizontal_total > 0 else 0
+    right_max = max_horizontal_total - left_pad
+    right_pad = rng.randint(0, right_max) if right_max > 0 else 0
+    horizontal_total = left_pad + right_pad
+
+    max_vertical_total = max(0, base_height // 2)
+    if horizontal_total <= 0 or max_vertical_total <= 0:
+        return left_pad, right_pad, 0, 0
+
+    max_vertical_total = min(max_vertical_total, horizontal_total - 1)
+    if max_vertical_total <= 0:
+        return left_pad, right_pad, 0, 0
+
+    top_pad = rng.randint(0, max_vertical_total)
+    bottom_max = max_vertical_total - top_pad
+    bottom_pad = rng.randint(0, bottom_max) if bottom_max > 0 else 0
+    return left_pad, right_pad, top_pad, bottom_pad
+
+
+def expand_background_by_edge_stretch(
+    image: PIL.Image.Image,
+    left_pad: int,
+    right_pad: int,
+    top_pad: int,
+    bottom_pad: int,
+) -> PIL.Image.Image:
+    if left_pad == 0 and right_pad == 0 and top_pad == 0 and bottom_pad == 0:
+        return image
+
+    src_width, src_height = image.size
+    new_width = src_width + left_pad + right_pad
+    new_height = src_height + top_pad + bottom_pad
+
+    expanded = PIL.Image.new(image.mode, (new_width, new_height))
+    expanded.paste(image, (left_pad, top_pad))
+
+    if left_pad > 0:
+        left_strip = image.crop((0, 0, 1, src_height)).resize((left_pad, src_height), RESAMPLE_BICUBIC)
+        expanded.paste(left_strip, (0, top_pad))
+
+    if right_pad > 0:
+        right_strip = image.crop((src_width - 1, 0, src_width, src_height)).resize((right_pad, src_height), RESAMPLE_BICUBIC)
+        expanded.paste(right_strip, (left_pad + src_width, top_pad))
+
+    if top_pad > 0:
+        top_source = expanded.crop((0, top_pad, new_width, top_pad + 1))
+        top_strip = top_source.resize((new_width, top_pad), RESAMPLE_BICUBIC)
+        expanded.paste(top_strip, (0, 0))
+
+    if bottom_pad > 0:
+        bottom_source = expanded.crop((0, top_pad + src_height - 1, new_width, top_pad + src_height))
+        bottom_strip = bottom_source.resize((new_width, bottom_pad), RESAMPLE_BICUBIC)
+        expanded.paste(bottom_strip, (0, top_pad + src_height))
+
+    return expanded
+
+
 def main():
     print('=' * 80)
     print('SINH DATASET OCR CHAT LUONG CAO TU FILE TEXT')
@@ -342,6 +424,7 @@ def main():
 
     font_stride = pick_coprime_stride(len(final_font_paths), SEED + 29)
     font_offset = (SEED * 7) % len(final_font_paths)
+    padding_rng = random.Random(SEED + PADDING_SEED_OFFSET)
 
     print(f"Tong font tim thay: {font_stats['all_fonts']:,}")
     print(f"Font Times: {font_stats['times_fonts']:,} | Font khac: {font_stats['other_fonts']:,}")
@@ -390,6 +473,13 @@ def main():
         'font_offset': font_offset,
         'valid_fonts_after_validation': len(final_font_paths),
         'invalid_fonts_removed': len(bad_fonts),
+        'base_margins': list(BASE_MARGINS),
+        'random_extra_padding_enabled': ENABLE_RANDOM_EXTRA_PADDING,
+        'random_padding_rules': {
+            'left_plus_right_lte_base_width': True,
+            'top_plus_bottom_lte_base_height_div_2': True,
+            'vertical_total_lt_horizontal_total': True,
+        },
         'created_at_utc': datetime.utcnow().isoformat() + 'Z',
         'notes': [
             'Duong dan duoc resolve theo vi tri script, khong phu thuoc cwd.',
@@ -402,6 +492,17 @@ def main():
 
     print(f"Bat dau tao {TOTAL_IMAGES - start_index:,} anh (tu mau thu {start_index + 1:,})...")
     current_batch_name = None
+    padding_stats = {
+        'left_sum': 0,
+        'right_sum': 0,
+        'top_sum': 0,
+        'bottom_sum': 0,
+        'max_left': 0,
+        'max_right': 0,
+        'max_top': 0,
+        'max_bottom': 0,
+        'applied_images': 0,
+    }
 
     with LABEL_FILE.open(label_mode, encoding='utf-8') as f_label:
         for i in tqdm(range(start_index, TOTAL_IMAGES), total=TOTAL_IMAGES, initial=start_index, desc='Dang tao du lieu'):
@@ -433,7 +534,7 @@ def main():
                     orientation=0,
                     space_width=1.0,
                     character_spacing=1,
-                    margins=(6, 10, 12, 10),
+                    margins=BASE_MARGINS,
                     fit=False,
                     output_mask=False,
                     word_split=False,
@@ -448,6 +549,33 @@ def main():
                     f'Loi render tai index={i + 1}, text_idx={text_idx}, '
                     f'font={Path(font_for_image).name}'
                 ) from e
+
+            if ENABLE_RANDOM_EXTRA_PADDING:
+                base_width, base_height = img.size
+                left_pad, right_pad, top_pad, bottom_pad = sample_random_extra_padding(
+                    base_width,
+                    base_height,
+                    padding_rng,
+                )
+
+                padding_stats['left_sum'] += left_pad
+                padding_stats['right_sum'] += right_pad
+                padding_stats['top_sum'] += top_pad
+                padding_stats['bottom_sum'] += bottom_pad
+                padding_stats['max_left'] = max(padding_stats['max_left'], left_pad)
+                padding_stats['max_right'] = max(padding_stats['max_right'], right_pad)
+                padding_stats['max_top'] = max(padding_stats['max_top'], top_pad)
+                padding_stats['max_bottom'] = max(padding_stats['max_bottom'], bottom_pad)
+
+                if left_pad or right_pad or top_pad or bottom_pad:
+                    padding_stats['applied_images'] += 1
+                    img = expand_background_by_edge_stretch(
+                        img,
+                        left_pad=left_pad,
+                        right_pad=right_pad,
+                        top_pad=top_pad,
+                        bottom_pad=bottom_pad,
+                    )
 
             batch_num = (i // BATCH_SIZE) + 1
             batch_folder_name = f"batch_{batch_num:03d}"
@@ -467,6 +595,22 @@ def main():
 
             if (i + 1) % 10000 == 0:
                 f_label.flush()
+
+    if ENABLE_RANDOM_EXTRA_PADDING:
+        generated_count = TOTAL_IMAGES - start_index
+        denom = max(1, generated_count)
+        report['random_padding_stats'] = {
+            'generated_images': generated_count,
+            'applied_images': padding_stats['applied_images'],
+            'mean_left_pad': round(padding_stats['left_sum'] / denom, 3),
+            'mean_right_pad': round(padding_stats['right_sum'] / denom, 3),
+            'mean_top_pad': round(padding_stats['top_sum'] / denom, 3),
+            'mean_bottom_pad': round(padding_stats['bottom_sum'] / denom, 3),
+            'max_left_pad': padding_stats['max_left'],
+            'max_right_pad': padding_stats['max_right'],
+            'max_top_pad': padding_stats['max_top'],
+            'max_bottom_pad': padding_stats['max_bottom'],
+        }
 
     report['finished_at_utc'] = datetime.utcnow().isoformat() + 'Z'
     report['completed_images'] = TOTAL_IMAGES
